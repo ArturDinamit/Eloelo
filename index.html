@@ -1,0 +1,233 @@
+
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>X18 Printer</title>
+<style>
+*{box-sizing:border-box}
+body{
+ margin:0;
+ min-height:100vh;
+ display:flex;
+ align-items:center;
+ justify-content:center;
+ background:#0b1120;
+ font-family:Arial,sans-serif;
+ color:white;
+}
+.card{
+ width:92%;
+ max-width:420px;
+ padding:26px;
+ border-radius:25px;
+ background:#1e293b;
+ text-align:center;
+ box-shadow:0 15px 40px #0006;
+}
+.logo{font-size:60px}
+h1{margin:12px 0;color:#93c5fd}
+p{color:#cbd5e1}
+#status{
+ padding:15px;
+ margin:20px 0;
+ background:#334155;
+ border-radius:12px;
+}
+textarea{
+ width:100%;
+ height:110px;
+ background:#0f172a;
+ color:white;
+ border:1px solid #64748b;
+ border-radius:12px;
+ padding:15px;
+ font-size:24px;
+ resize:none;
+}
+button{
+ display:block;
+ width:100%;
+ margin-top:15px;
+ padding:17px;
+ border:0;
+ border-radius:13px;
+ background:#2563eb;
+ color:white;
+ font-size:17px;
+ font-weight:bold;
+ cursor:pointer;
+}
+button:disabled{opacity:.5}
+.print{background:#16a34a}
+small{color:#94a3b8}
+</style>
+</head>
+<body>
+
+<div class="card">
+ <div class="logo">🖨️</div>
+ <h1>X18 Printer</h1>
+ <p>Управление мини-принтером</p>
+
+ <div id="status">Не подключён</div>
+
+ <button onclick="connect()">
+  Подключить Bluetooth
+ </button>
+
+ <h3>Текст для печати</h3>
+ <textarea id="txt">нахуя</textarea>
+
+ <button class="print" id="print"
+ onclick="printText()" disabled>
+  Напечатать
+ </button>
+
+ <p><small>Bluetooth X18</small></p>
+</div>
+
+<script>
+let printer=null;
+let device=null;
+
+const statusEl=document.getElementById("status");
+const printBtn=document.getElementById("print");
+
+function setStatus(t){
+ statusEl.textContent=t;
+}
+
+async function connect(){
+ try{
+  if(!navigator.bluetooth){
+   throw Error("Браузер не поддерживает Web Bluetooth");
+  }
+
+  setStatus("Выбери X18 в списке");
+
+  device=await navigator.bluetooth.requestDevice({
+   acceptAllDevices:true,
+   optionalServices:[
+    "0000ff00-0000-1000-8000-00805f9b34fb",
+    "0000ae30-0000-1000-8000-00805f9b34fb"
+   ]
+  });
+
+  device.addEventListener(
+   "gattserverdisconnected",
+   ()=>{
+    printer=null;
+    printBtn.disabled=true;
+    setStatus("Отключён");
+   }
+  );
+
+  let server=await device.gatt.connect();
+  let services=await server.getPrimaryServices();
+
+  printer=null;
+
+  for(let service of services){
+   let chars=await service.getCharacteristics();
+
+   for(let ch of chars){
+    if(ch.properties.write ||
+       ch.properties.writeWithoutResponse){
+     printer=ch;
+     break;
+    }
+   }
+   if(printer)break;
+  }
+
+  if(!printer){
+   throw Error("Канал печати не найден");
+  }
+
+  printBtn.disabled=false;
+  setStatus("Подключён: "+(device.name||"X18"));
+
+ }catch(e){
+  printer=null;
+  printBtn.disabled=true;
+  setStatus("Ошибка: "+e.message);
+ }
+}
+
+async function send(data){
+ if(printer.properties.writeWithoutResponse){
+  await printer.writeValueWithoutResponse(data);
+ }else{
+  await printer.writeValueWithResponse(data);
+ }
+}
+
+async function printText(){
+ if(!printer)return;
+
+ try{
+  setStatus("Отправка на печать...");
+
+  let text=document.getElementById("txt").value;
+
+  const canvas=document.createElement("canvas");
+  canvas.width=384;
+  canvas.height=160;
+
+  let ctx=canvas.getContext("2d");
+  ctx.fillStyle="white";
+  ctx.fillRect(0,0,384,160);
+
+  ctx.fillStyle="black";
+  ctx.textAlign="center";
+  ctx.font="bold 36px Arial";
+  ctx.fillText(text,192,85,370);
+
+  let pixels=ctx.getImageData(
+   0,0,384,160
+  ).data;
+
+  let bytes=new Uint8Array(8+48*160);
+
+  bytes.set([
+   29,118,48,0,
+   48,0,160,0
+  ]);
+
+  let pos=8;
+
+  for(let y=0;y<160;y++){
+   for(let x=0;x<384;x+=8){
+    let b=0;
+
+    for(let bit=0;bit<8;bit++){
+     let i=(y*384+x+bit)*4;
+     let brightness=(
+      pixels[i]+pixels[i+1]+pixels[i+2]
+     )/3;
+
+     if(brightness<128){
+      b|=128>>bit;
+     }
+    }
+    bytes[pos++]=b;
+   }
+  }
+
+  for(let i=0;i<bytes.length;i+=20){
+   await send(bytes.slice(i,i+20));
+  }
+
+  await send(new Uint8Array([10,10,10]));
+
+  setStatus("Данные отправлены!");
+
+ }catch(e){
+  setStatus("Ошибка: "+e.message);
+ }
+}
+</script>
+</body>
+</html>
